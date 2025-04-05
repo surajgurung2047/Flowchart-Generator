@@ -1,7 +1,310 @@
-OUTPUT "are we insane?"
-INPUT ans
-IF ans = "yes" THEN
-	OUTPUT "correct"
-ELSE
-	OUTPUT "incorrect"
-ENDIF
+
+import argparse
+import csv
+import os
+import sys
+from datetime import datetime
+
+def parse_arguments():
+    """
+    Parse command-line arguments using argparse.
+    Returns the parsed arguments.
+    """
+    parser = argparse.ArgumentParser(description='Process weather data from CSV files.')
+    parser.add_argument('input_file', help='Input CSV file containing weather data')
+    parser.add_argument('-o', '--output', help='Base name for output files (default: weather_output)',
+                        default='weather_output')
+    parser.add_argument('-r', '--report', action='store_true',
+                        help='Generate a detailed report file')
+    return parser.parse_args()
+
+def validate_file(file_path):
+    """
+    Validate if the file exists and is readable.
+    Returns True if valid, False otherwise.
+    """
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' not found")
+        return False
+    
+    if not os.access(file_path, os.R_OK):
+        print(f"Error: No permission to read file '{file_path}'")
+        return False
+    
+    return True
+
+def read_weather_data(file_path):
+    """
+    Read weather data from CSV file and return as a list of dictionaries.
+    Each dictionary contains date, temperature, humidity, and precipitation values.
+    """
+    weather_data = []
+    required_columns = ['date', 'temperature', 'humidity', 'precipitation']
+    
+    try:
+        with open(file_path, 'r', newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            
+            # Validate CSV structure
+            headers = [h.lower() for h in reader.fieldnames]
+            missing_columns = [col for col in required_columns if col not in headers]
+            
+            if missing_columns:
+                print(f"Error: Input file missing required columns: {', '.join(missing_columns)}")
+                return None
+            
+            # Process data rows
+            for row_num, row in enumerate(reader, start=2):  # Start from 2 to account for header row
+                try:
+                    # Convert date string to datetime object for validation
+                    date_str = row['date']
+                    try:
+                        datetime.strptime(date_str, '%Y-%m-%d')
+                    except ValueError:
+                        print(f"Warning: Invalid date format in row {row_num}: {date_str}")
+                        continue
+                    
+                    # Convert numeric fields and validate
+                    temperature = float(row['temperature'])
+                    humidity = float(row['humidity'])
+                    precipitation = float(row['precipitation'])
+                    
+                    # Basic range validation
+                    if not (-50 <= temperature <= 50):
+                        print(f"Warning: Temperature out of reasonable range in row {row_num}: {temperature}")
+                    
+                    if not (0 <= humidity <= 100):
+                        print(f"Warning: Humidity out of range (0-100) in row {row_num}: {humidity}")
+                    
+                    if precipitation < 0:
+                        print(f"Warning: Negative precipitation in row {row_num}: {precipitation}")
+                    
+                    # Add to dataset
+                    weather_data.append({
+                        'date': date_str,
+                        'temperature': temperature,
+                        'humidity': humidity,
+                        'precipitation': precipitation
+                    })
+                except ValueError as e:
+                    print(f"Error in row {row_num}: {e}")
+                    continue
+                except KeyError as e:
+                    print(f"Missing field in row {row_num}: {e}")
+                    continue
+        
+        return weather_data
+    
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return None
+
+def calculate_statistics(weather_data):
+    """
+    Calculate statistics from weather data including averages and extremes.
+    """
+    if not weather_data:
+        return None
+    
+    # Initialize variables for calculations
+    total_temp = 0
+    total_humidity = 0
+    total_precipitation = 0
+    count = len(weather_data)
+    
+    # Lists to store extreme weather events
+    hot_days = []  # Days with temperature > 30°C
+    cold_days = []  # Days with temperature < 0°C
+    humid_days = []  # Days with humidity > 90%
+    rainy_days = []  # Days with precipitation > 25mm
+    
+    # Process each day's data
+    for day in weather_data:
+        # Add to running totals
+        total_temp += day['temperature']
+        total_humidity += day['humidity']
+        total_precipitation += day['precipitation']
+        
+        # Check for extreme conditions
+        if day['temperature'] > 30:
+            hot_days.append((day['date'], day['temperature']))
+        elif day['temperature'] < 0:
+            cold_days.append((day['date'], day['temperature']))
+        
+        if day['humidity'] > 90:
+            humid_days.append((day['date'], day['humidity']))
+        
+        if day['precipitation'] > 25:
+            rainy_days.append((day['date'], day['precipitation']))
+    
+    # Calculate averages
+    avg_temp = total_temp / count if count > 0 else 0
+    avg_humidity = total_humidity / count if count > 0 else 0
+    avg_precipitation = total_precipitation / count if count > 0 else 0
+    
+    # Return statistics dictionary
+    return {
+        'avg_temperature': round(avg_temp, 2),
+        'avg_humidity': round(avg_humidity, 2),
+        'avg_precipitation': round(avg_precipitation, 2),
+        'data_points': count,
+        'hot_days': hot_days,
+        'cold_days': cold_days,
+        'humid_days': humid_days,
+        'rainy_days': rainy_days
+    }
+
+def write_summary_file(output_path, stats):
+    """
+    Write summary statistics to CSV file.
+    """
+    try:
+        with open(output_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Metric', 'Value'])
+            writer.writerow(['Average Temperature (°C)', stats['avg_temperature']])
+            writer.writerow(['Average Humidity (%)', stats['avg_humidity']])
+            writer.writerow(['Average Precipitation (mm)', stats['avg_precipitation']])
+            writer.writerow(['Data Points Analyzed', stats['data_points']])
+            writer.writerow(['Number of Hot Days (>30°C)', len(stats['hot_days'])])
+            writer.writerow(['Number of Cold Days (<0°C)', len(stats['cold_days'])])
+            writer.writerow(['Number of Humid Days (>90%)', len(stats['humid_days'])])
+            writer.writerow(['Number of Rainy Days (>25mm)', len(stats['rainy_days'])])
+        
+        print(f"Summary data written to {output_path}")
+        return True
+    except Exception as e:
+        print(f"Error writing summary file: {e}")
+        return False
+
+def write_report_file(output_path, stats, input_file):
+    """
+    Write a detailed report with analysis and extreme weather events.
+    """
+    try:
+        with open(output_path, 'w') as report:
+            # Report header
+            report.write("WEATHER DATA ANALYSIS REPORT\n")
+            report.write("=" * 30 + "\n\n")
+            report.write(f"Input file: {input_file}\n")
+            report.write(f"Analysis date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            report.write(f"Data points analyzed: {stats['data_points']}\n\n")
+            
+            # Summary statistics
+            report.write("SUMMARY STATISTICS\n")
+            report.write("-" * 20 + "\n")
+            report.write(f"Average Temperature: {stats['avg_temperature']}°C\n")
+            report.write(f"Average Humidity: {stats['avg_humidity']}%\n")
+            report.write(f"Average Precipitation: {stats['avg_precipitation']} mm\n\n")
+            
+            # Weather interpretation
+            report.write("WEATHER INTERPRETATION\n")
+            report.write("-" * 20 + "\n")
+            
+            # Temperature interpretation
+            if stats['avg_temperature'] > 25:
+                report.write("The average temperature is high, suggesting a warm climate or season.\n")
+            elif stats['avg_temperature'] < 10:
+                report.write("The average temperature is low, suggesting a cool climate or season.\n")
+            else:
+                report.write("The average temperature is moderate.\n")
+            
+            # Humidity interpretation
+            if stats['avg_humidity'] > 80:
+                report.write("The average humidity is high, suggesting a humid climate.\n")
+            elif stats['avg_humidity'] < 40:
+                report.write("The average humidity is low, suggesting a dry climate.\n")
+            else:
+                report.write("The average humidity is moderate.\n")
+            
+            # Precipitation interpretation
+            if stats['avg_precipitation'] > 10:
+                report.write("The average precipitation is high, suggesting frequent rainfall.\n")
+            elif stats['avg_precipitation'] < 2:
+                report.write("The average precipitation is low, suggesting a dry period.\n")
+            else:
+                report.write("The average precipitation is moderate.\n\n")
+            
+            # Extreme weather events
+            report.write("EXTREME WEATHER EVENTS\n")
+            report.write("-" * 20 + "\n")
+            
+            # Hot days
+            if stats['hot_days']:
+                report.write("\nHot Days (Temperature > 30°C):\n")
+                for date, temp in stats['hot_days']:
+                    report.write(f"  - {date}: {temp}°C\n")
+            
+            # Cold days
+            if stats['cold_days']:
+                report.write("\nCold Days (Temperature < 0°C):\n")
+                for date, temp in stats['cold_days']:
+                    report.write(f"  - {date}: {temp}°C\n")
+            
+            # Humid days
+            if stats['humid_days']:
+                report.write("\nHumid Days (Humidity > 90%):\n")
+                for date, humidity in stats['humid_days']:
+                    report.write(f"  - {date}: {humidity}%\n")
+            
+            # Rainy days
+            if stats['rainy_days']:
+                report.write("\nRainy Days (Precipitation > 25mm):\n")
+                for date, precip in stats['rainy_days']:
+                    report.write(f"  - {date}: {precip} mm\n")
+            
+            if not (stats['hot_days'] or stats['cold_days'] or stats['humid_days'] or stats['rainy_days']):
+                report.write("No extreme weather events detected in the dataset.\n")
+            
+            # Footer
+            report.write("\n" + "=" * 30 + "\n")
+            report.write("End of report\n")
+        
+        print(f"Detailed report written to {output_path}")
+        return True
+    except Exception as e:
+        print(f"Error writing report file: {e}")
+        return False
+
+def main():
+    """
+    Main function to orchestrate the weather data processing workflow.
+    """
+    # Parse command-line arguments
+    args = parse_arguments()
+    
+    # Validate input file
+    if not validate_file(args.input_file):
+        return 1
+    
+    # Read weather data
+    print(f"Reading weather data from {args.input_file}...")
+    weather_data = read_weather_data(args.input_file)
+    if weather_data is None:
+        return 1
+    
+    print(f"Successfully read {len(weather_data)} data points.")
+    
+    # Calculate statistics
+    print("Calculating weather statistics...")
+    stats = calculate_statistics(weather_data)
+    if stats is None:
+        print("Error: Failed to calculate statistics.")
+        return 1
+    
+    # Generate output files
+    summary_file = f"{args.output}_summary.csv"
+    if not write_summary_file(summary_file, stats):
+        return 1
+    
+    # Generate report if requested
+    if args.report:
+        report_file = f"{args.output}_report.txt"
+        if not write_report_file(report_file, stats, args.input_file):
+            return 1
+    
+    print("Weather data processing completed successfully.")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
